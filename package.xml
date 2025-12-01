@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>solo_usb_controller</name>
+  <version>1.0.0</version>
+  <description>Motor control stack for SOLO Mini v2 controllers via USB on ROS 2 Jazzy</description>
+  <maintainer email="jeeves@todo.todo">jeeves</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>rclcpp</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>libboost-dev</depend>
+  <depend>libboost-system-dev</depend>
+  <depend>ncurses</depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

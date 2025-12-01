@@ -1,0 +1,4 @@
+# Example udev rules for stable SOLO Mini v2 device names
+# Save as: 99-solo.rules (place in /etc/udev/rules.d/ then udevadm control --reload-rules && udevadm trigger)
+# Replace idVendor/idProduct/serial with actual values from 'udevadm info -a -n /dev/ttyACM0'
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="xxxx", SYMLINK+="solo_mc_%s{serial}"
