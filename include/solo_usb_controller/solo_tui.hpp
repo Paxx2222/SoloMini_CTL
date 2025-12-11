@@ -72,6 +72,8 @@ private:
     std::string status_message_;
     std::string firmware_version_;  // Cache firmware version
     std::chrono::steady_clock::time_point last_update_;
+    bool telemetry_read_success_;  // Track telemetry read status
+    std::string telemetry_error_;  // Last telemetry error message
     
     // Logging
     bool logging_enabled_;

@@ -21,8 +21,9 @@ public:
         std::string device;
         unsigned int baudrate;
         unsigned int timeout_ms;
+        uint8_t device_address;  // SOLO device address (0x00-0xFE, 0xFF=broadcast)
         
-        Config() : device("/dev/solo_mc_1"), baudrate(115200), timeout_ms(500) {}
+        Config() : device("/dev/solo_mc_1"), baudrate(115200), timeout_ms(1000), device_address(0x00) {}
     };
 
     explicit SoloSerial(const Config& config = Config());
@@ -40,6 +41,7 @@ public:
     // Utility
     void flush();
     std::string getLastError() const { return last_error_; }
+    Config& getConfig() { return config_; }
 
 private:
     Config config_;

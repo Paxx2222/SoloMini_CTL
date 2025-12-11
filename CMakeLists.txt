@@ -86,11 +86,23 @@ install(TARGETS
   RUNTIME DESTINATION bin
 )
 
+# Install executables for ROS2 (lib/${PROJECT_NAME})
 install(TARGETS
   solo_tui_direct
   simple_test_tui
   debug_protocol
   DESTINATION lib/${PROJECT_NAME}
+)
+
+# Also install to bin/ for direct access
+# Note: This installs to install/solo_usb_controller/bin/
+# For direct access, use: export PATH="$HOME/ros2_ws/install/solo_usb_controller/bin:$PATH"
+# Or use: ros2 run solo_usb_controller solo_tui_direct
+install(TARGETS
+  solo_tui_direct
+  simple_test_tui
+  debug_protocol
+  RUNTIME DESTINATION bin
 )
 
 # Install headers
@@ -104,11 +116,13 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/config
 )
 
-# Install launch files
-install(DIRECTORY
-  launch/
-  DESTINATION share/${PROJECT_NAME}/launch
-)
+# Install launch files (if directory exists)
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launch")
+  install(DIRECTORY
+    launch/
+    DESTINATION share/${PROJECT_NAME}/launch
+  )
+endif()
 
 # Install rules
 install(FILES

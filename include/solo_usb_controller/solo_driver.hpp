@@ -43,6 +43,7 @@ struct Fault {
 // Telemetry data
 struct Telemetry {
     float speed_rad_s = 0.0f;          // rad/s
+    float speed_raw = 0.0f;            // Raw value from READ_SPEED_FEEDBACK (0x96)
     float position_rad = 0.0f;         // rad
     float torque_nm = 0.0f;            // N·m
     float current_a = 0.0f;            // A (quadrature current)
@@ -73,7 +74,7 @@ struct MotorConfig {
 
 // Limits
 struct Limits {
-    float max_speed_rad_s = 150.0f;
+    float max_speed_rad_s = 20.94f;  // 200 RPM = 200 * (2π/60) ≈ 20.94 rad/s
     float max_torque_nm = 2.5f;
     float max_current_a = 20.0f;
     float dc_bus_volt_min = 12.0f;
@@ -95,9 +96,13 @@ public:
     bool connect();
     void disconnect();
     bool isConnected() const;
+    
+    // Auto-detect device address (tries 0x00, 0x01, 0x02, etc.)
+    bool autoDetectAddress();
 
     // Motor control
     bool setControlMode(ControlMode mode);
+    bool setCommandMode(uint32_t mode);  // 0=ANALOGUE, 1=DIGITAL, 2=ANALOGUE_WITH_DIGITAL_SPEED_GAIN
     bool setSpeedSetpoint(float speed_rad_s);
     bool setTorqueSetpoint(float torque_nm);
     bool setPositionSetpoint(float position_rad, bool relative = false);
@@ -112,13 +117,14 @@ public:
     bool setLimits(const Limits& limits);
     bool setPID(ControlMode mode, const PIDConfig& pid);
     bool setRampRate(float ramp_rate);  // units/s/s
+    bool setPWMFrequency(uint32_t frequency_khz);  // PWM frequency in kHz
+    bool setMotorType(uint32_t motor_type);  // 0=DC, 1=BLDC_PMSM, 2=ACIM, 3=BLDC_PMSM_ULTRAFAST
+    bool setFeedbackControlMode(uint32_t mode);  // 0=SENSORLESS_HSO, 1=ENCODERS, 2=HALL_SENSORS
+    bool clearFaults();  // Clear error register
     
     // Telemetry
     bool readTelemetry(Telemetry& telemetry);
     bool readFaults(Fault& faults);
-    
-    // Fault management
-    bool clearFaults();
     
     // Flash operations
     bool saveToFlash();
@@ -157,6 +163,8 @@ private:
         WRITE_MOTOR_POLES = 0x0F,
         WRITE_ENCODER_LINES = 0x10,
         WRITE_SPEED_LIMIT = 0x11,
+        WRITE_FEEDBACK_CONTROL_MODE = 0x13,
+        WRITE_MOTOR_TYPE = 0x15,
         WRITE_CONTROL_MODE = 0x16,
         WRITE_CURRENT_KP = 0x17,
         WRITE_CURRENT_KI = 0x18,
@@ -192,7 +200,7 @@ private:
         READ_FEEDBACK_MODE = 0x99,
         READ_COMMAND_MODE = 0x9A,
         READ_CONTROL_MODE = 0x9B,
-        READ_POSITION_FEEDBACK = 0xA0,
+        READ_POSITION_COUNTS_FEEDBACK = 0xA0,
         READ_ERROR_REGISTER = 0xA1,
         READ_FIRMWARE_VERSION = 0xA2,
         READ_MOTOR_ENABLE = 0xB3,  // Drive state
@@ -205,6 +213,7 @@ private:
     bool readFloat(CommandID cmd, float& value);
     bool readFloatNoFlush(CommandID cmd, float& value);
     bool readInt32(CommandID cmd, int32_t& value);
+    bool readInt32NoFlush(CommandID cmd, int32_t& value);
     bool readUInt32(CommandID cmd, uint32_t& value);
     
     float clampToLimits(float value, float min, float max);

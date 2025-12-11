@@ -1,8 +1,21 @@
 #include "solo_usb_controller/solo_tui.hpp"
 #include <iostream>
 #include <cstdlib>
+#include <csignal>
+#include <atomic>
+
+// Global flag for signal handling
+std::atomic<bool> g_shutdown_requested(false);
+
+void signalHandler(int signum) {
+    g_shutdown_requested = true;
+}
 
 int main(int argc, char** argv) {
+    // Set up signal handlers for clean exit
+    std::signal(SIGINT, signalHandler);   // Ctrl+C
+    std::signal(SIGTERM, signalHandler);  // kill command
+    
     std::string device = "/dev/solo_mc_1";
     
     // Parse command line arguments

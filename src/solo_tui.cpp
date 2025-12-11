@@ -2,6 +2,8 @@
 #include <iomanip>
 #include <sstream>
 #include <cmath>
+#include <thread>
+#include <chrono>
 
 namespace solo {
 
@@ -14,6 +16,8 @@ SoloTUI::SoloTUI(const std::string& device)
     , screen_height_(0)
     , screen_width_(0)
     , show_help_(false)
+    , telemetry_read_success_(true)
+    , telemetry_error_("")
     , logging_enabled_(false)
 {
     SoloSerial::Config config;
@@ -40,7 +44,12 @@ void SoloTUI::run() {
         return;
     }
     
-    status_message_ = "Connected!";
+    status_message_ = "Connected! Using device address 0x00";
+    drawUI();
+    
+    // Skip auto-detection if address is already 0x00 (most common case)
+    // Auto-detection can hang if device doesn't respond to broadcast
+    // User can manually specify address via command line if needed
     
     // Read firmware version once (cache it)
     if (!driver_->readFirmwareVersion(firmware_version_)) {
@@ -50,45 +59,168 @@ void SoloTUI::run() {
     running_ = true;
     last_update_ = std::chrono::steady_clock::now();
     
-    // Set initial mode
-    driver_->setControlMode(current_mode_);
+    // Clear any existing faults first - try multiple times for stubborn faults
+    // WATCHDOG_TIMEOUT requires multiple clears
+    for (int i = 0; i < 5; i++) {
+        driver_->clearFaults();
+        std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    }
+    
+    // Read and check for faults before proceeding
+    Telemetry test_telem;
+    bool has_faults = false;
+    if (driver_->readFaults(test_telem.faults)) {
+        if (test_telem.faults.hasAnyFault()) {
+            has_faults = true;
+            status_message_ = "WARNING: Device has faults: " + test_telem.faults.toString();
+            drawUI();
+            // Try clearing again with longer delay
+            for (int i = 0; i < 3; i++) {
+                driver_->clearFaults();
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+        }
+    }
+    
+    // If still has faults, try reading firmware version to verify communication
+    if (has_faults) {
+        std::string fw_test;
+        if (!driver_->readFirmwareVersion(fw_test)) {
+            status_message_ = "ERROR: Cannot communicate with device. Check connection.";
+            drawUI();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+        }
+    }
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Set motor type: BLDC_PMSM = 1 (required before other config)
+    if (!driver_->setMotorType(1)) {  // BLDC_PMSM
+        status_message_ = "ERROR: Failed to set motor type: " + driver_->getLastError();
+        drawUI();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Set feedback control mode: ENCODERS = 1 (required)
+    if (!driver_->setFeedbackControlMode(1)) {  // ENCODERS
+        status_message_ = "ERROR: Failed to set feedback mode: " + driver_->getLastError();
+        drawUI();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Set command mode to DIGITAL (required for digital speed control)
+    if (!driver_->setCommandMode(1)) {  // DIGITAL = 1
+        status_message_ = "ERROR: Failed to set command mode: " + driver_->getLastError();
+        drawUI();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Set initial control mode
+    if (!driver_->setControlMode(current_mode_)) {
+        status_message_ = "ERROR: Failed to set control mode: " + driver_->getLastError();
+        drawUI();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Configure motor parameters from dual.yaml config
+    // poles: 30 means total poles = 30, so pole_pairs = 15
+    MotorConfig motor_config;
+    motor_config.pole_pairs = 15;  // From dual.yaml: poles=30, so pole_pairs=15
+    motor_config.encoder_cpr = 4096;  // From dual.yaml
+    if (!driver_->setMotorConfig(motor_config)) {
+        status_message_ = "ERROR: Failed to set motor config: " + driver_->getLastError();
+        drawUI();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Set speed limit from dual.yaml: max_speed_rad_s: 20
+    Limits limits;
+    limits.max_speed_rad_s = 20.0f;  // From dual.yaml
+    limits.max_current_a = 3.0f;  // From dual.yaml: max_current_a: 3
+    if (!driver_->setLimits(limits)) {
+        status_message_ = "ERROR: Failed to set limits: " + driver_->getLastError();
+        drawUI();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Set PWM frequency to 20 kHz (from dual.yaml requirement)
+    if (!driver_->setPWMFrequency(20)) {
+        status_message_ = "ERROR: Failed to set PWM frequency: " + driver_->getLastError();
+        drawUI();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Set PID gains for speed control from dual.yaml
+    PIDConfig speed_pid;
+    speed_pid.p = 0.2f;  // From dual.yaml: speed: {p: 0.2, i: 0.01}
+    speed_pid.i = 0.01f;
+    if (!driver_->setPID(ControlMode::SPEED, speed_pid)) {
+        status_message_ = "ERROR: Failed to set PID: " + driver_->getLastError();
+        drawUI();
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    // Clear faults again after configuration
+    driver_->clearFaults();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    status_message_ = "Configuration complete";
     
     // Main loop
     while (running_) {
+        // Handle input FIRST (non-blocking with 50ms timeout)
+        int ch = getch();
+        if (ch != ERR) {
+            handleInput(ch);
+        }
+        
         auto now = std::chrono::steady_clock::now();
         auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
             now - last_update_).count();
         
         // Update telemetry at fixed rate
         if (elapsed >= UPDATE_RATE_MS) {
-            driver_->readTelemetry(telemetry_);
+            telemetry_read_success_ = driver_->readTelemetry(telemetry_);
+            if (!telemetry_read_success_) {
+                telemetry_error_ = driver_->getLastError();
+            } else {
+                telemetry_error_.clear();
+            }
             
-            if (logging_enabled_) {
+            // Continuously send setpoint when motor is enabled (SOLO may need periodic updates)
+            if (motor_enabled_) {
+                switch (current_mode_) {
+                    case ControlMode::SPEED:
+                        driver_->setSpeedSetpoint(setpoint_);
+                        break;
+                    case ControlMode::TORQUE:
+                        driver_->setTorqueSetpoint(setpoint_);
+                        break;
+                    case ControlMode::POSITION:
+                        driver_->setPositionSetpoint(setpoint_);
+                        break;
+                }
+            }
+            
+            if (logging_enabled_ && telemetry_read_success_) {
                 logData();
             }
             
             last_update_ = now;
         }
         
-        // Draw UI
+        // Draw UI every loop
         drawUI();
-        
-        // Handle input (non-blocking)
-        timeout(50);  // 50ms timeout for getch
-        int ch = getch();
-        if (ch != ERR) {
-            handleInput(ch);
-        }
     }
 }
 
 void SoloTUI::initUI() {
     initscr();
-    cbreak();
-    noecho();
-    keypad(stdscr, TRUE);
-    nodelay(stdscr, TRUE);
+    cbreak();     // Line buffering disabled, pass characters immediately
+    noecho();     // Don't echo input
+    keypad(stdscr, TRUE);  // Enable function keys
     curs_set(0);  // Hide cursor
+    timeout(50);  // Set 50ms timeout for getch() globally
     
     // Enable colors if available
     if (has_colors()) {
@@ -134,9 +266,9 @@ void SoloTUI::drawUI() {
 
 void SoloTUI::drawHeader() {
     attron(COLOR_PAIR(4) | A_BOLD);
-    mvprintw(0, 0, "╔════════════════════════════════════════════════════════════════════════╗");
-    mvprintw(1, 0, "║           SOLO Motor Controller - Direct USB Control (Stage 1)        ║");
-    mvprintw(2, 0, "╚════════════════════════════════════════════════════════════════════════╝");
+    mvprintw(0, 0, "================================================================================");
+    mvprintw(1, 0, "           SOLO Motor Controller - Direct USB Control (Stage 1)        ");
+    mvprintw(2, 0, "================================================================================");
     attroff(COLOR_PAIR(4) | A_BOLD);
 }
 
@@ -158,6 +290,18 @@ void SoloTUI::drawConnectionStatus() {
     // Display cached firmware version
     if (!firmware_version_.empty()) {
         mvprintw(row, 50, "FW: %s", firmware_version_.c_str());
+    }
+    
+    // Telemetry status indicator
+    row++;
+    if (telemetry_read_success_) {
+        attron(COLOR_PAIR(1));
+        mvprintw(row, 2, "● Telemetry: OK");
+        attroff(COLOR_PAIR(1));
+    } else {
+        attron(COLOR_PAIR(2) | A_BOLD);
+        mvprintw(row, 2, "● Telemetry: FAILED");
+        attroff(COLOR_PAIR(2) | A_BOLD);
     }
 }
 
@@ -233,10 +377,33 @@ void SoloTUI::drawTelemetry() {
     
     row++;
     
-    mvprintw(row++, 4, "Speed:       %8.2f rad/s", telemetry_.speed_rad_s);
-    mvprintw(row++, 4, "Position:    %8.2f rad", telemetry_.position_rad);
-    mvprintw(row++, 4, "Torque:      %8.2f N·m", telemetry_.torque_nm);
-    mvprintw(row++, 4, "Current:     %8.2f A", telemetry_.current_a);
+    // Show error if telemetry read failed
+    if (!telemetry_read_success_) {
+        attron(COLOR_PAIR(2) | A_BOLD);
+        mvprintw(row++, 4, "ERROR: Telemetry read failed!");
+        attroff(COLOR_PAIR(2) | A_BOLD);
+        if (!telemetry_error_.empty()) {
+            attron(COLOR_PAIR(3));
+            // Truncate error message if too long
+            std::string error_display = telemetry_error_;
+            if (error_display.length() > 60) {
+                error_display = error_display.substr(0, 57) + "...";
+            }
+            mvprintw(row++, 4, "%s", error_display.c_str());
+            attroff(COLOR_PAIR(3));
+        }
+        row++;
+        mvprintw(row++, 4, "Values shown may be stale");
+        row++;
+        return;
+    }
+    
+    // Show speed with raw value from 0x96 command
+    mvprintw(row++, 4, "Speed:       %10.4f rad/s", telemetry_.speed_rad_s);
+    mvprintw(row++, 4, "  Raw 0x96:  %10.4f (%.2f RPM expected)", telemetry_.speed_raw, telemetry_.speed_raw);
+    mvprintw(row++, 4, "Position:    %10.4f rad", telemetry_.position_rad);
+    mvprintw(row++, 4, "Torque:      %10.4f N·m", telemetry_.torque_nm);
+    mvprintw(row++, 4, "Current:     %10.4f A", telemetry_.current_a);
     mvprintw(row++, 4, "Voltage:     %8.2f V", telemetry_.voltage_v);
     
     // Temperature with color coding
@@ -269,13 +436,13 @@ void SoloTUI::drawFaults() {
     int col = screen_width_ / 2 - 20;
     
     attron(COLOR_PAIR(5) | A_BOLD | A_BLINK);
-    mvprintw(row++, col, "╔══════════════════════════════════════╗");
-    mvprintw(row++, col, "║         ⚠ FAULT DETECTED ⚠          ║");
-    mvprintw(row++, col, "╠══════════════════════════════════════╣");
+    mvprintw(row++, col, "========================================");
+    mvprintw(row++, col, "         ! FAULT DETECTED !          ");
+    mvprintw(row++, col, "----------------------------------------");
     
     std::string fault_str = telemetry_.faults.toString();
-    mvprintw(row++, col, "║ %-36s ║", fault_str.c_str());
-    mvprintw(row++, col, "╚══════════════════════════════════════╝");
+    mvprintw(row++, col, "  %-36s  ", fault_str.c_str());
+    mvprintw(row++, col, "========================================");
     attroff(COLOR_PAIR(5) | A_BOLD | A_BLINK);
 }
 
@@ -284,20 +451,20 @@ void SoloTUI::drawHelp() {
     int col = 10;
     
     attron(COLOR_PAIR(4));
-    mvprintw(row++, col, "╔════════════════════ HELP ═════════════════════╗");
-    mvprintw(row++, col, "║                                               ║");
-    mvprintw(row++, col, "║  UP/DOWN    - Adjust setpoint                ║");
-    mvprintw(row++, col, "║  LEFT/RIGHT - Fine adjust setpoint           ║");
-    mvprintw(row++, col, "║  M          - Cycle control mode              ║");
-    mvprintw(row++, col, "║  E          - Toggle motor enable             ║");
-    mvprintw(row++, col, "║  SPACE      - Emergency stop                  ║");
-    mvprintw(row++, col, "║  L          - Toggle CSV logging              ║");
-    mvprintw(row++, col, "║  C          - Clear faults                    ║");
-    mvprintw(row++, col, "║  H          - Home position (set to 0)        ║");
-    mvprintw(row++, col, "║  ?          - Toggle this help                ║");
-    mvprintw(row++, col, "║  Q / ESC    - Quit                            ║");
-    mvprintw(row++, col, "║                                               ║");
-    mvprintw(row++, col, "╚═══════════════════════════════════════════════╝");
+    mvprintw(row++, col, "==================================== HELP ====================================");
+    mvprintw(row++, col, "                                                                              ");
+    mvprintw(row++, col, "  UP/DOWN    - Adjust setpoint                                               ");
+    mvprintw(row++, col, "  LEFT/RIGHT - Fine adjust setpoint                                          ");
+    mvprintw(row++, col, "  M          - Cycle control mode                                            ");
+    mvprintw(row++, col, "  E          - Toggle motor enable                                           ");
+    mvprintw(row++, col, "  SPACE      - Emergency stop                                                 ");
+    mvprintw(row++, col, "  L          - Toggle CSV logging                                             ");
+    mvprintw(row++, col, "  C          - Clear faults                                                   ");
+    mvprintw(row++, col, "  H          - Home position (set to 0)                                       ");
+    mvprintw(row++, col, "  ?          - Toggle this help                                               ");
+    mvprintw(row++, col, "  Q / ESC    - Quit                                                           ");
+    mvprintw(row++, col, "                                                                              ");
+    mvprintw(row++, col, "==============================================================================");
     attroff(COLOR_PAIR(4));
 }
 
@@ -430,6 +597,18 @@ void SoloTUI::toggleMotor() {
     driver_->enableMotor(motor_enabled_);
     
     if (motor_enabled_) {
+        // Send current setpoint when enabling motor
+        switch (current_mode_) {
+            case ControlMode::SPEED:
+                driver_->setSpeedSetpoint(setpoint_);
+                break;
+            case ControlMode::TORQUE:
+                driver_->setTorqueSetpoint(setpoint_);
+                break;
+            case ControlMode::POSITION:
+                driver_->setPositionSetpoint(setpoint_);
+                break;
+        }
         status_message_ = "Motor ENABLED - Use caution!";
     } else {
         status_message_ = "Motor disabled";

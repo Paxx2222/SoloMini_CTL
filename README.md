@@ -1,40 +1,42 @@
-# SOLO USB Controller - Stage 1: Direct USB Control
+# SOLO USB Controller - Dual Track Vehicle Control
 
 Motor control stack for SOLO Mini v2 controllers via USB on ROS 2 Jazzy (Ubuntu 24.04, Raspberry Pi 4).
 
-**Current Stage:** Stage 1 - `solo_tui_direct` (Direct USB Control TUI)
+**Current Stage:** Stage 2 - `dual_track_tui_direct` (Dual Motor Tracked Vehicle Control)
 
-## Features (Stage 1)
+## Features (Stage 2 - Dual Track Control)
 
-✅ **Direct USB Control**
+✅ **Dual Motor Tracked Vehicle Control**
+- Control two SOLO controllers for differential/tank drive
+- Coordinated motion: forward, reverse, turn, rotate in place
+- Side-by-side telemetry display for both motors
+- Fault monitoring for both controllers
+
+✅ **Motion Controls**
+- Drive straight (same speed, opposite directions)
+- Arc turns (differential speed)
+- Rotate in place (pivot turn)
+- Emergency stop (both motors)
+
+✅ **Stage 1 Features (Single Motor)**
 - Interactive Terminal User Interface (TUI) with ncurses
 - Real-time telemetry display
 - CSV data logging
-
-✅ **Control Modes**
-- Speed control (rad/s)
-- Torque control (N·m)
-- Position control (rad)
+- Speed/Torque/Position control modes
 
 ✅ **Safety Features**
-- Emergency stop (SPACE)
-- Fault detection and display
-- Motor enable/disable safeguards
-- Fault clearing
-
-✅ **Monitoring**
-- Speed, position, torque feedback
-- Current and voltage monitoring
-- Temperature monitoring with color coding
-- Encoder counts
-- Fault status
+- Emergency stop (SPACE) - stops both motors
+- Fault detection on either motor triggers stop
+- Synchronized enable/disable
+- Per-motor fault display
 
 ## Hardware Requirements
 
 - **Compute:** Raspberry Pi 4 (4-8 GB RAM)
 - **OS:** Ubuntu 24.04 LTS (64-bit)
-- **Motor Driver:** SOLO Mini v2 (USB connection)
-- **Motor:** BLDC or Brushed (per SOLO support)
+- **Motor Drivers:** 2x SOLO Mini v2 (USB connection)
+- **Motors:** 2x BLDC or Brushed (per SOLO support)
+- **Configuration:** Tracked/tank drive with motors on opposite sides
 
 ## Dependencies
 
@@ -65,7 +67,10 @@ sudo apt install -y \
    sudo udevadm trigger
    ```
    
-   After connecting your SOLO controller, it should appear as `/dev/solo_mc_1`.
+   After connecting your SOLO controllers, they should appear as:
+   - `/dev/solo_left` - Left track motor (USB port 1-1.3)
+   - `/dev/solo_right` - Right track motor (USB port 1-1.4)
+   - `/dev/solo_mc_1` - Legacy single-motor symlink
 
 3. **Build the package:**
    ```bash
@@ -76,19 +81,80 @@ sudo apt install -y \
 
 ## Usage
 
-### Running the Direct USB TUI
+### Stage 2: Dual Track Control TUI (Recommended)
 
-**Default device (`/dev/solo_mc_1`):**
+**Running the Dual Track TUI:**
 ```bash
+# Using udev symlinks (recommended)
+ros2 run solo_usb_controller dual_track_tui_direct
+
+# Or specify devices directly
+ros2 run solo_usb_controller dual_track_tui_direct -l /dev/ttyACM1 -r /dev/ttyACM2
+```
+
+**Dual Track Keyboard Controls:**
+
+| Key | Action |
+|-----|--------|
+| `W` / `↑` | Forward (increase speed) |
+| `S` / `↓` | Reverse (decrease speed) |
+| `A` / `←` | Turn left |
+| `D` / `→` | Turn right |
+| `Q` | Rotate counter-clockwise (in place) |
+| `E` | Rotate clockwise (in place) |
+| `X` | Stop (zero speed) |
+| `M` | Toggle motors enable/disable |
+| `SPACE` | **Emergency stop** (both motors) |
+| `+` / `-` | Adjust speed step |
+| `[` / `]` | Adjust turn sensitivity |
+| `L` | Toggle CSV logging |
+| `C` | Clear faults |
+| `?` | Toggle help display |
+| `ESC` | Quit |
+
+---
+
+### Stage 1: Single Motor TUI
+
+**Running the Direct USB TUI:**
+
+**Important:** The TUI requires an interactive terminal. Make sure you're running it directly (not piped/redirected).
+
+**Option 1: Using udev symlink (recommended)**
+```bash
+# First, install udev rules (see Installation section above)
 ros2 run solo_usb_controller solo_tui_direct
 ```
 
-**Custom device:**
+**Option 2: Specify device directly**
 ```bash
-ros2 run solo_usb_controller solo_tui_direct /dev/ttyUSB0
+# If udev rules not installed, specify the device:
+ros2 run solo_usb_controller solo_tui_direct /dev/ttyACM0
+# or
+ros2 run solo_usb_controller solo_tui_direct /dev/ttyACM1
 ```
 
-### Keyboard Controls
+**Finding your device:**
+```bash
+# List available CDC serial devices
+ls -la /dev/ttyACM*
+
+# Check USB devices
+lsusb | grep -i solo
+```
+
+**Direct executable access (after sourcing workspace):**
+```bash
+# Option 1: Use the setup script
+source ~/ros2_ws/src/SoloMini_CTL/scripts/setup_env.sh
+solo_tui_direct
+
+# Option 2: Manually add to PATH
+export PATH="$HOME/ros2_ws/install/solo_usb_controller/bin:$PATH"
+solo_tui_direct
+```
+
+### Stage 1 Keyboard Controls
 
 | Key | Action |
 |-----|--------|
@@ -133,13 +199,23 @@ Modify these in `solo_driver.hpp` and rebuild if needed.
 
 ## Troubleshooting
 
+### TUI Display Issues
+
+**Problem:** TUI doesn't appear or shows garbled output
+- **Solution:** The TUI requires an interactive terminal. Don't pipe or redirect output
+- Run directly: `ros2 run solo_usb_controller solo_tui_direct /dev/ttyACM0`
+- Make sure your terminal supports ncurses (most modern terminals do)
+- If running over SSH, ensure your terminal is properly sized
+
 ### Connection Issues
 
-**Problem:** "Failed to connect" error
+**Problem:** "Failed to connect" or "No such file or directory" error
 - Check USB cable connection
-- Verify device path: `ls -l /dev/solo_mc_*` or `ls -l /dev/ttyUSB*`
-- Check udev rules are installed
-- Try specifying device manually: `solo_tui_direct /dev/ttyUSB0`
+- Verify device path: `ls -l /dev/solo_mc_*` or `ls -l /dev/ttyACM*`
+- If `/dev/solo_mc_1` doesn't exist:
+  - Install udev rules: `sudo cp rules/99-solo.rules /etc/udev/rules.d/ && sudo udevadm control --reload-rules && sudo udevadm trigger`
+  - Or specify device directly: `ros2 run solo_usb_controller solo_tui_direct /dev/ttyACM0`
+- Check device permissions: `ls -l /dev/ttyACM*` (should be readable by dialout group)
 
 **Problem:** Permission denied
 ```bash
@@ -161,25 +237,34 @@ If faults appear:
 ```
 solo_usb_controller/
 ├── include/solo_usb_controller/
-│   ├── solo_serial.hpp      # USB serial communication layer
-│   ├── solo_driver.hpp      # High-level SOLO driver
-│   └── solo_tui.hpp         # TUI application
+│   ├── solo_serial.hpp         # USB serial communication layer
+│   ├── solo_driver.hpp         # High-level SOLO driver (single motor)
+│   ├── dual_track_driver.hpp   # Dual motor tracked vehicle driver
+│   ├── solo_tui.hpp            # Stage 1: Single motor TUI
+│   └── dual_track_tui.hpp      # Stage 2: Dual motor TUI
 ├── src/
-│   ├── solo_serial.cpp      # Serial implementation
-│   ├── solo_driver.cpp      # Driver implementation
-│   ├── solo_tui.cpp         # TUI implementation
-│   └── solo_tui_direct_main.cpp  # Main entry point
-├── config/                  # Configuration files (future ROS nodes)
-├── documents/               # PRD and datasheets
-└── rules/                   # udev rules
+│   ├── solo_serial.cpp         # Serial implementation
+│   ├── solo_driver.cpp         # Driver implementation
+│   ├── dual_track_driver.cpp   # Dual track driver implementation
+│   ├── solo_tui.cpp            # Stage 1 TUI implementation
+│   ├── dual_track_tui.cpp      # Stage 2 TUI implementation
+│   ├── solo_tui_direct_main.cpp     # Stage 1 entry point
+│   └── dual_track_tui_main.cpp      # Stage 2 entry point
+├── config/                     # Configuration files
+│   ├── motor1.yaml             # Single motor config
+│   └── dual.yaml               # Dual motor config
+├── documents/                  # PRD and datasheets
+└── rules/
+    └── 99-solo.rules           # udev rules for device symlinks
 ```
 
-## Next Stages (Roadmap)
+## Stages (Roadmap)
 
-- [ ] **Stage 2:** ROS 2 node (`solo_node`) with topics/services
-- [ ] **Stage 3:** ROS-based TUI (`solo_tui_ros`)
-- [ ] **Stage 4:** Dual motor support
-- [ ] **Stage 5:** Tracked vehicle control (`tracked_control_node`)
+- [x] **Stage 1:** Direct USB TUI (`solo_tui_direct`) - Single motor control
+- [x] **Stage 2:** Dual Track TUI (`dual_track_tui_direct`) - Tracked vehicle control
+- [ ] **Stage 3:** ROS 2 node (`solo_node`) with topics/services
+- [ ] **Stage 4:** ROS-based TUI (`solo_tui_ros`)
+- [ ] **Stage 5:** Tracked vehicle ROS node (`tracked_control_node`) with `/cmd_vel`
 
 ## Protocol Reference
 
@@ -209,8 +294,8 @@ jeeves@todo.todo
 
 ---
 
-**Version:** 1.0.0 (Stage 1 Complete)  
-**Date:** 2025-10-22
+**Version:** 2.0.0 (Stage 2 Complete)  
+**Date:** 2025-12-11
 
 
 

@@ -4,18 +4,17 @@
 #include <iomanip>
 #include <thread>
 #include <chrono>
+#include <cmath>
 
 namespace solo {
 
 // Convert SOLO SFXT format to float
 // SFXT is a fixed-point format: value = int32 / 131072.0
-// NOTE: Data bytes are already reversed during extraction (little-endian response),
-// so we use big-endian interpretation here (matches official library)
+// Data bytes are in big-endian order (MSB first) as received from controller
 static float sfxtToFloat(const std::vector<uint8_t>& data) {
     if (data.size() < 4) return 0.0f;
     
-    // Data bytes are already reversed during extraction, so use big-endian interpretation
-    // This matches the official SOLO library: ExtractData reverses, then ConvertToFloat uses big-endian
+    // Data bytes are in big-endian order: data[0] is MSB, data[3] is LSB
     uint32_t raw = (static_cast<uint32_t>(data[0]) << 24) |
                    (static_cast<uint32_t>(data[1]) << 16) |
                    (static_cast<uint32_t>(data[2]) << 8) |
@@ -33,12 +32,11 @@ static float sfxtToFloat(const std::vector<uint8_t>& data) {
 }
 
 // Convert uint32 from bytes
-// NOTE: Data bytes are already reversed during extraction (little-endian response),
-// so we use big-endian interpretation here (matches official library)
+// Data bytes are in big-endian order (MSB first) as received from controller
 static uint32_t bytesToUInt32(const std::vector<uint8_t>& data) {
     if (data.size() < 4) return 0;
     
-    // Data bytes are already reversed during extraction, so use big-endian interpretation
+    // Data bytes are in big-endian order: data[0] is MSB, data[3] is LSB
     return (static_cast<uint32_t>(data[0]) << 24) |
            (static_cast<uint32_t>(data[1]) << 16) |
            (static_cast<uint32_t>(data[2]) << 8) |
@@ -120,6 +118,57 @@ bool SoloDriver::isConnected() const {
     return serial_->isConnected();
 }
 
+bool SoloDriver::autoDetectAddress() {
+    if (!serial_->isConnected()) {
+        last_error_ = "Not connected";
+        return false;
+    }
+    
+    // Method 1: Use broadcast address (0xFF) to read device address
+    // This is the proper way according to Python library
+    uint8_t old_addr = serial_->getConfig().device_address;
+    serial_->getConfig().device_address = 0xFF;  // Broadcast address
+    
+    serial_->flush();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    
+    uint32_t detected_addr = 0;
+    if (readUInt32(CommandID::READ_DEVICE_ADDRESS, detected_addr)) {
+        // Got the address! Set it and verify
+        if (detected_addr <= 0xFE) {
+            serial_->getConfig().device_address = static_cast<uint8_t>(detected_addr);
+            
+            // Verify by reading firmware version
+            std::string fw_version;
+            if (readFirmwareVersion(fw_version)) {
+                last_error_.clear();
+                return true;
+            }
+        }
+    }
+    
+    // Method 2: Fallback - try common addresses by reading firmware version
+    std::vector<uint8_t> addresses_to_try = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05};
+    
+    for (uint8_t addr : addresses_to_try) {
+        serial_->getConfig().device_address = addr;
+        serial_->flush();
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        
+        std::string fw_version;
+        if (readFirmwareVersion(fw_version)) {
+            // Success! Keep this address
+            last_error_.clear();
+            return true;
+        }
+    }
+    
+    // Restore old address
+    serial_->getConfig().device_address = old_addr;
+    last_error_ = "Could not detect device address (tried broadcast and 0x00-0x05)";
+    return false;
+}
+
 bool SoloDriver::setControlMode(ControlMode mode) {
     uint32_t mode_val = static_cast<uint32_t>(mode);
     if (writeUInt32(CommandID::WRITE_CONTROL_MODE, mode_val)) {
@@ -130,7 +179,30 @@ bool SoloDriver::setControlMode(ControlMode mode) {
 }
 
 bool SoloDriver::setSpeedSetpoint(float speed_rad_s) {
-    return writeFloat(CommandID::WRITE_SPEED_REFERENCE, speed_rad_s);
+    // SOLO expects:
+    // 1. Speed as positive INTEGER in RPM (0-200000)
+    // 2. Direction set separately via WRITE_MOTOR_DIRECTION (0=CW, 1=CCW)
+    
+    // Determine direction from sign
+    // Direction: 0 = Clockwise, 1 = Counter-Clockwise
+    uint32_t direction = (speed_rad_s >= 0) ? 0 : 1;
+    
+    // Set direction first
+    if (!writeUInt32(CommandID::WRITE_MOTOR_DIRECTION, direction)) {
+        return false;
+    }
+    
+    // Convert to positive RPM
+    // RPM = |rad/s| * (60/2π) = |rad/s| * 9.54929658551
+    float speed_rpm_float = std::abs(speed_rad_s) * 9.54929658551f;
+    uint32_t speed_rpm = static_cast<uint32_t>(std::round(speed_rpm_float));
+    
+    return writeUInt32(CommandID::WRITE_SPEED_REFERENCE, speed_rpm);
+}
+
+bool SoloDriver::setCommandMode(uint32_t mode) {
+    // Command mode: 0=ANALOGUE, 1=DIGITAL, 2=ANALOGUE_WITH_DIGITAL_SPEED_GAIN
+    return writeUInt32(CommandID::WRITE_COMMAND_MODE, mode);
 }
 
 bool SoloDriver::setTorqueSetpoint(float torque_nm) {
@@ -189,7 +261,10 @@ bool SoloDriver::isMotorEnabled() {
 bool SoloDriver::setMotorConfig(const MotorConfig& config) {
     bool success = true;
     
-    success &= writeUInt32(CommandID::WRITE_MOTOR_POLES, config.pole_pairs);
+    // WRITE_MOTOR_POLES expects total poles, not pole pairs
+    // Config has pole_pairs, so total poles = pole_pairs * 2
+    uint32_t total_poles = config.pole_pairs * 2;
+    success &= writeUInt32(CommandID::WRITE_MOTOR_POLES, total_poles);
     success &= writeUInt32(CommandID::WRITE_ENCODER_LINES, config.encoder_cpr);
     
     return success;
@@ -198,7 +273,11 @@ bool SoloDriver::setMotorConfig(const MotorConfig& config) {
 bool SoloDriver::setLimits(const Limits& limits) {
     bool success = true;
     
-    success &= writeFloat(CommandID::WRITE_SPEED_LIMIT, limits.max_speed_rad_s);
+    // SOLO expects speed limit as INTEGER in RPM (not float!)
+    // Python code uses DataType.UINT32 for speed limit
+    float speed_limit_rpm_float = limits.max_speed_rad_s * 9.54929658551f;
+    uint32_t speed_limit_rpm = static_cast<uint32_t>(std::round(speed_limit_rpm_float));
+    success &= writeUInt32(CommandID::WRITE_SPEED_LIMIT, speed_limit_rpm);
     success &= writeFloat(CommandID::WRITE_CURRENT_LIMIT, limits.max_current_a);
     
     return success;
@@ -232,24 +311,72 @@ bool SoloDriver::setRampRate(float ramp_rate) {
     return true;
 }
 
+bool SoloDriver::setPWMFrequency(uint32_t frequency_khz) {
+    // SOLO expects PWM frequency in kHz (8-80 kHz range)
+    return writeUInt32(CommandID::WRITE_OUTPUT_PWM_FREQUENCY, frequency_khz);
+}
+
+bool SoloDriver::setMotorType(uint32_t motor_type) {
+    // Motor type: 0=DC, 1=BLDC_PMSM, 2=ACIM, 3=BLDC_PMSM_ULTRAFAST
+    return writeUInt32(CommandID::WRITE_MOTOR_TYPE, motor_type);
+}
+
+bool SoloDriver::setFeedbackControlMode(uint32_t mode) {
+    // Feedback mode: 0=SENSORLESS_HSO, 1=ENCODERS, 2=HALL_SENSORS
+    return writeUInt32(CommandID::WRITE_FEEDBACK_CONTROL_MODE, mode);
+}
+
+bool SoloDriver::clearFaults() {
+    // Clear error register (overwrite with 0)
+    return writeUInt32(CommandID::WRITE_OVERWRITE_ERROR, 0);
+}
+
 bool SoloDriver::readTelemetry(Telemetry& telemetry) {
     // Flush once before reading all telemetry
     serial_->flush();
     
     bool success = true;
     
-    // Read without individual flushes (using internal method)
-    success &= readFloatNoFlush(CommandID::READ_SPEED_FEEDBACK, telemetry.speed_rad_s);
-    success &= readFloatNoFlush(CommandID::READ_POSITION_FEEDBACK, telemetry.position_rad);
-    success &= readFloatNoFlush(CommandID::READ_CURRENT_IQ, telemetry.current_a);
-    success &= readFloatNoFlush(CommandID::READ_BUS_VOLTAGE, telemetry.voltage_v);
-    success &= readFloatNoFlush(CommandID::READ_TEMPERATURE, telemetry.temperature_c);
+    // Read telemetry values with delays between reads
+    // Some controllers need more time between sequential reads
     
-    // Calculate encoder count from position
-    // Assuming 4096 CPR encoder and 15 pole pairs from config
+    // Read speed feedback (0x96) - SOLO returns speed in RPM as INT32
+    int32_t speed_rpm = 0;
+    bool speed_read_ok = readInt32NoFlush(CommandID::READ_SPEED_FEEDBACK, speed_rpm);
+    success &= speed_read_ok;
+    
+    // Store raw value for debugging
+    telemetry.speed_raw = static_cast<float>(speed_rpm);
+    
+    // Convert RPM to rad/s: rad/s = RPM * (2π/60) = RPM * 0.10471975512
+    // If read failed, speed_rpm will be 0, so speed_rad_s will be 0
+    telemetry.speed_rad_s = static_cast<float>(speed_rpm) * 0.10471975512f;
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    
+    // Read position as INT32 encoder counts (0xA0)
+    int32_t position_counts = 0;
+    bool position_read_ok = readInt32NoFlush(CommandID::READ_POSITION_COUNTS_FEEDBACK, position_counts);
+    success &= position_read_ok;
+    
+    // Store encoder count
+    telemetry.encoder_count = static_cast<uint32_t>(position_counts);
+    
+    // Convert encoder counts to radians
+    // Assuming 4096 CPR encoder
     uint32_t encoder_cpr = 4096;
     const float TWO_PI = 6.28318530718f;
-    telemetry.encoder_count = static_cast<uint32_t>(telemetry.position_rad / TWO_PI * encoder_cpr);
+    telemetry.position_rad = (static_cast<float>(position_counts) / static_cast<float>(encoder_cpr)) * TWO_PI;
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    
+    success &= readFloatNoFlush(CommandID::READ_CURRENT_IQ, telemetry.current_a);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    
+    success &= readFloatNoFlush(CommandID::READ_BUS_VOLTAGE, telemetry.voltage_v);
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    
+    success &= readFloatNoFlush(CommandID::READ_TEMPERATURE, telemetry.temperature_c);
     
     // Estimate torque from Iq current
     // For BLDC motor: Torque = Kt * Iq, where Kt ≈ 60/(2*pi*Kv*sqrt(3)) for BLDC
@@ -282,9 +409,6 @@ bool SoloDriver::readFaults(Fault& faults) {
     return true;
 }
 
-bool SoloDriver::clearFaults() {
-    return writeUInt32(CommandID::WRITE_OVERWRITE_ERROR, 0);
-}
 
 bool SoloDriver::saveToFlash() {
     // SOLO doesn't have a direct save-to-flash command in basic UART protocol
@@ -385,6 +509,9 @@ bool SoloDriver::readFloatNoFlush(CommandID cmd, float& value) {
     uint8_t resp_cmd;
     std::vector<uint8_t> data;
     
+    // Flush any stale data before sending command
+    serial_->flush();
+    
     // Send read command (empty data for read commands)
     std::vector<uint8_t> empty_data;
     if (!serial_->writeCommand(static_cast<uint8_t>(cmd), empty_data)) {
@@ -394,7 +521,8 @@ bool SoloDriver::readFloatNoFlush(CommandID cmd, float& value) {
     
     // Delay for controller to process and respond
     // Official Python library uses 100ms delay after write (time.sleep(0.1))
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // Increased to 150ms for more reliable reads
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
     
     // Read response
     if (!serial_->readResponse(resp_cmd, data) || data.size() < 4) {
@@ -403,14 +531,60 @@ bool SoloDriver::readFloatNoFlush(CommandID cmd, float& value) {
     }
     
     // Verify we got the expected command back
+    // If command mismatch, it might be an error response - try to read error register
     if (resp_cmd != static_cast<uint8_t>(cmd)) {
-        last_error_ = "Command mismatch";
+        // Check if it's an error response (0xEE)
+        if (resp_cmd == 0xEE) {
+            last_error_ = "Device returned error response (0xEE)";
+        } else {
+            std::stringstream ss;
+            ss << "Command mismatch: expected 0x" << std::hex << std::setfill('0') << std::setw(2)
+               << static_cast<int>(cmd) << ", got 0x" << static_cast<int>(resp_cmd);
+            last_error_ = ss.str();
+        }
         return false;
     }
     
     // Convert from SOLO SFXT format to float
     // Data bytes are already reversed during extraction
     value = sfxtToFloat(data);
+    return true;
+}
+
+bool SoloDriver::readInt32NoFlush(CommandID cmd, int32_t& value) {
+    uint8_t resp_cmd;
+    std::vector<uint8_t> data;
+    
+    // No flush - for sequential reads
+    
+    std::vector<uint8_t> empty_data;
+    if (!serial_->writeCommand(static_cast<uint8_t>(cmd), empty_data)) {
+        last_error_ = serial_->getLastError();
+        return false;
+    }
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(150));
+    
+    if (!serial_->readResponse(resp_cmd, data) || data.size() < 4) {
+        last_error_ = "Invalid response for INT32 read";
+        return false;
+    }
+    
+    if (resp_cmd != static_cast<uint8_t>(cmd)) {
+        std::stringstream ss;
+        ss << "Command mismatch: expected 0x" << std::hex 
+           << static_cast<int>(static_cast<uint8_t>(cmd))
+           << ", got 0x" << static_cast<int>(resp_cmd);
+        last_error_ = ss.str();
+        return false;
+    }
+    
+    // Convert 4 bytes to int32_t (big-endian, signed)
+    value = (static_cast<int32_t>(data[0]) << 24) |
+            (static_cast<int32_t>(data[1]) << 16) |
+            (static_cast<int32_t>(data[2]) << 8) |
+            static_cast<int32_t>(data[3]);
+    
     return true;
 }
 

@@ -142,9 +142,8 @@ bool SoloSerial::writeCommand(uint8_t cmd, const std::vector<uint8_t>& data) {
         std::vector<uint8_t> frame;
         frame.push_back(0xFF);  // Initiator 1
         frame.push_back(0xFF);  // Initiator 2
-        // Device address: Try 0x00 first (default), controller may not respond to broadcast 0xFF
-        // Official library uses 'addr' variable which defaults to device-specific address
-        frame.push_back(0x00);  // Device address (0x00 = default address)
+        // Device address from config (0x00-0xFE for specific device, 0xFF for broadcast)
+        frame.push_back(config_.device_address);  // Device address
         frame.push_back(cmd);   // Command ID
         
         // Add 4 bytes of data (pad with zeros if needed)
@@ -223,8 +222,8 @@ bool SoloSerial::readResponse(uint8_t& cmd, std::vector<uint8_t>& data, uint32_t
         timeout_ms = config_.timeout_ms;
     }
     
-    // Flush input buffer before reading (Python library does this)
-    flush();
+    // Don't flush here - we want to read the response!
+    // Flush should happen before sending the command, not before reading response
     
     try {
         // Official Python library reads exactly 10 bytes: _read_packet = self._ser.read(10)
@@ -316,7 +315,10 @@ bool SoloSerial::readResponse(uint8_t& cmd, std::vector<uint8_t>& data, uint32_t
         // Extract command and data
         cmd = read_buffer[3];
         data.clear();
-        for (int j = 3; j >= 0; j--) { // Extract data bytes in reverse order (little-endian response)
+        // Extract data bytes in big-endian order (as they appear in frame)
+        // Frame: [0xFF] [0xFF] [ADDR] [CMD] [DATA0] [DATA1] [DATA2] [DATA3] [CRC] [0xFE]
+        // DATA0 is MSB, DATA3 is LSB (big-endian)
+        for (int j = 0; j < 4; j++) {
             data.push_back(read_buffer[4+j]);
         }
         
@@ -346,7 +348,8 @@ bool SoloSerial::readResponse(uint8_t& cmd, std::vector<uint8_t>& data, uint32_t
         
         cmd = frame[3];
         data.clear();
-        for (int i = 3; i >= 0; i--) {
+        // Extract data bytes in big-endian order (as they appear in frame)
+        for (int i = 0; i < 4; i++) {
             data.push_back(frame[4 + i]);
         }
         
