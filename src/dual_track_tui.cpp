@@ -416,12 +416,17 @@ void DualTrackTUI::drawTelemetryPanel() {
     }
     row++;
     
-    // Logging status
+    // Logging and correction status
     row++;
     if (logging_enabled_) {
         attron(COLOR_PAIR(1));
-        mvprintw(row, 4, "● LOGGING ACTIVE");
+        mvprintw(row, 4, "● LOGGING");
         attroff(COLOR_PAIR(1));
+    }
+    if (driver_->isSpeedCorrectionEnabled()) {
+        attron(COLOR_PAIR(6));
+        mvprintw(row, logging_enabled_ ? 18 : 4, "● SPEED CORRECTION");
+        attroff(COLOR_PAIR(6));
     }
 }
 
@@ -469,6 +474,7 @@ void DualTrackTUI::drawHelp() {
     mvprintw(row++, col, "  SYSTEM:                                                               ");
     mvprintw(row++, col, "    M           - Toggle motor enable    SPACE      - EMERGENCY STOP    ");
     mvprintw(row++, col, "    C           - Clear faults           L          - Toggle logging    ");
+    mvprintw(row++, col, "    P           - Toggle speed correction (closed-loop)                 ");
     mvprintw(row++, col, "    ?           - Toggle this help       ESC / R    - Quit              ");
     mvprintw(row++, col, "                                                                        ");
     mvprintw(row++, col, "========================================================================");
@@ -561,6 +567,16 @@ void DualTrackTUI::handleInput(int ch) {
         case 'l':
         case 'L':
             toggleLogging();
+            break;
+            
+        // Speed correction toggle
+        case 'p':
+        case 'P':
+            {
+                bool enabled = !driver_->isSpeedCorrectionEnabled();
+                driver_->enableSpeedCorrection(enabled);
+                status_message_ = enabled ? "Speed correction ENABLED (Kp=0.5)" : "Speed correction DISABLED";
+            }
             break;
             
         // Help

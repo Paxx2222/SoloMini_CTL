@@ -128,9 +128,18 @@ bool DualTrackDriver::setTrackSpeeds(float left_rad_s, float right_rad_s) {
     left_rad_s = clampVelocity(left_rad_s);
     right_rad_s = clampVelocity(right_rad_s);
     
+    // Store targets for correction
+    left_speed_target_ = left_rad_s;
+    right_speed_target_ = right_rad_s;
+    
     // Apply motor direction inversions
     float left_cmd = applyLeftInversion(left_rad_s);
     float right_cmd = applyRightInversion(right_rad_s);
+    
+    // Apply speed correction if enabled
+    if (speed_correction_enabled_) {
+        applySpeedCorrection(left_cmd, right_cmd);
+    }
     
     bool left_ok = left_motor_->setSpeedSetpoint(left_cmd);
     bool right_ok = right_motor_->setSpeedSetpoint(right_cmd);
@@ -226,6 +235,41 @@ float DualTrackDriver::applyRightInversion(float velocity) const {
 float DualTrackDriver::clampVelocity(float velocity) const {
     return std::max(-config_.max_speed_rad_s, 
                     std::min(config_.max_speed_rad_s, velocity));
+}
+
+void DualTrackDriver::applySpeedCorrection(float& left_cmd, float& right_cmd) {
+    // Get actual speeds from cached telemetry (already inverted in telemetry reading)
+    float left_actual = left_telemetry_.speed_rad_s;
+    float right_actual = right_telemetry_.speed_rad_s;
+    
+    // Calculate errors (target vs actual)
+    // Note: left_cmd/right_cmd are already inverted for motor direction
+    // We compare against the original target speeds
+    float left_error = left_speed_target_ - left_actual;
+    float right_error = right_speed_target_ - right_actual;
+    
+    // Apply proportional correction
+    left_correction_ = speed_correction_kp_ * left_error;
+    right_correction_ = speed_correction_kp_ * right_error;
+    
+    // Add correction to command (respecting inversion)
+    if (config_.invert_left) {
+        left_cmd -= left_correction_;
+    } else {
+        left_cmd += left_correction_;
+    }
+    
+    if (config_.invert_right) {
+        right_cmd -= right_correction_;
+    } else {
+        right_cmd += right_correction_;
+    }
+    
+    // Clamp corrected commands to limits
+    left_cmd = std::max(-config_.max_speed_rad_s, 
+                        std::min(config_.max_speed_rad_s, left_cmd));
+    right_cmd = std::max(-config_.max_speed_rad_s, 
+                         std::min(config_.max_speed_rad_s, right_cmd));
 }
 
 } // namespace solo

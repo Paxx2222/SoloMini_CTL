@@ -151,6 +151,29 @@ public:
     
     /** @brief Get last error message */
     std::string getLastError() const { return last_error_; }
+    
+    //=========================================================================
+    // Speed Correction (Closed-Loop)
+    //=========================================================================
+    
+    /**
+     * @brief Enable/disable automatic speed correction
+     * When enabled, compares commanded vs actual speed and applies corrections
+     * @param enable True to enable correction
+     */
+    void enableSpeedCorrection(bool enable) { speed_correction_enabled_ = enable; }
+    
+    /** @brief Check if speed correction is enabled */
+    bool isSpeedCorrectionEnabled() const { return speed_correction_enabled_; }
+    
+    /**
+     * @brief Set proportional gain for speed correction
+     * @param kp Proportional gain (default 0.5)
+     */
+    void setSpeedCorrectionGain(float kp) { speed_correction_kp_ = kp; }
+    
+    /** @brief Get current correction gain */
+    float getSpeedCorrectionGain() const { return speed_correction_kp_; }
 
 private:
     Config config_;
@@ -161,12 +184,23 @@ private:
     Telemetry left_telemetry_;
     Telemetry right_telemetry_;
     
+    // Speed correction (closed-loop)
+    bool speed_correction_enabled_ = false;
+    float speed_correction_kp_ = 0.5f;  // Proportional gain
+    float left_speed_target_ = 0.0f;    // Target speed for left motor
+    float right_speed_target_ = 0.0f;   // Target speed for right motor
+    float left_correction_ = 0.0f;      // Accumulated correction for left
+    float right_correction_ = 0.0f;     // Accumulated correction for right
+    
     // Apply direction inversion based on config
     float applyLeftInversion(float velocity) const;
     float applyRightInversion(float velocity) const;
     
     // Clamp velocity to limits
     float clampVelocity(float velocity) const;
+    
+    // Apply speed correction based on telemetry feedback
+    void applySpeedCorrection(float& left_cmd, float& right_cmd);
 };
 
 } // namespace solo

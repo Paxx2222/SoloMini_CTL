@@ -206,7 +206,7 @@ class SoloMotorControllerUart:
                 self._logger.error( e, exc_info=True)
 
             self._logger.debug('SEH: serial init')
-            res = self.connect()
+            res = self.serial_open()
             self._logger.debug('SEH end')
             return res
 

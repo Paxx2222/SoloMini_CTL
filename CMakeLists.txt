@@ -44,6 +44,25 @@ target_link_libraries(solo_tui
   ${CURSES_LIBRARIES}
 )
 
+# Dual Track Driver library (Stage 2)
+add_library(dual_track_driver
+  src/dual_track_driver.cpp
+)
+
+target_link_libraries(dual_track_driver
+  solo_driver
+)
+
+# Dual Track TUI library (Stage 2)
+add_library(dual_track_tui
+  src/dual_track_tui.cpp
+)
+
+target_link_libraries(dual_track_tui
+  dual_track_driver
+  ${CURSES_LIBRARIES}
+)
+
 # solo_tui_direct executable (Stage 1)
 add_executable(solo_tui_direct
   src/solo_tui_direct_main.cpp
@@ -77,10 +96,25 @@ target_link_libraries(debug_protocol
   ${Boost_LIBRARIES}
 )
 
+# dual_track_tui_direct executable (Stage 2)
+add_executable(dual_track_tui_direct
+  src/dual_track_tui_main.cpp
+)
+
+target_link_libraries(dual_track_tui_direct
+  dual_track_tui
+  dual_track_driver
+  solo_driver
+  ${Boost_LIBRARIES}
+  ${CURSES_LIBRARIES}
+)
+
 # Install targets
 install(TARGETS
   solo_driver
   solo_tui
+  dual_track_driver
+  dual_track_tui
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin
@@ -89,6 +123,7 @@ install(TARGETS
 # Install executables for ROS2 (lib/${PROJECT_NAME})
 install(TARGETS
   solo_tui_direct
+  dual_track_tui_direct
   simple_test_tui
   debug_protocol
   DESTINATION lib/${PROJECT_NAME}
@@ -98,8 +133,10 @@ install(TARGETS
 # Note: This installs to install/solo_usb_controller/bin/
 # For direct access, use: export PATH="$HOME/ros2_ws/install/solo_usb_controller/bin:$PATH"
 # Or use: ros2 run solo_usb_controller solo_tui_direct
+# Or use: ros2 run solo_usb_controller dual_track_tui_direct
 install(TARGETS
   solo_tui_direct
+  dual_track_tui_direct
   simple_test_tui
   debug_protocol
   RUNTIME DESTINATION bin
