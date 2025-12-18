@@ -23,21 +23,27 @@ void printUsage(const char* program) {
               << "  -r, --right DEVICE   Right motor device (default: /dev/solo_right)\n"
               << "  --invert-left        Invert left motor direction\n"
               << "  --no-invert-right    Don't invert right motor (default: inverted)\n"
+              << "  --ros                Enable ROS2 topic control (/ibus/ch2, /ibus/ch1)\n"
               << "  -h, --help           Show this help message\n"
               << "\n"
               << "Examples:\n"
               << "  " << program << "\n"
               << "  " << program << " -l /dev/ttyACM0 -r /dev/ttyACM1\n"
-              << "  " << program << " --left /dev/solo_left --right /dev/solo_right\n"
+              << "  " << program << " --ros\n"
+              << "  " << program << " --left /dev/solo_left --right /dev/solo_right --ros\n"
               << "\n"
               << "Controls:\n"
-              << "  W/S or UP/DOWN    - Forward/Reverse\n"
-              << "  A/D or LEFT/RIGHT - Turn left/right\n"
-              << "  Q/E               - Rotate in place\n"
+              << "  W/S or UP/DOWN    - Forward/Reverse (disabled when ROS2 active)\n"
+              << "  A/D or LEFT/RIGHT - Turn left/right (disabled when ROS2 active)\n"
+              << "  Q/E               - Rotate in place (disabled when ROS2 active)\n"
               << "  M                 - Toggle motor enable\n"
               << "  SPACE             - Emergency stop\n"
               << "  ?                 - Show help overlay\n"
-              << "  ESC               - Quit\n";
+              << "  ESC               - Quit\n"
+              << "\n"
+              << "ROS2 Topics (when --ros enabled):\n"
+              << "  /ibus/ch2         - Speed control (std_msgs/Float64: -1=reverse, 1=forward)\n"
+              << "  /ibus/ch1         - Steering control (std_msgs/Float64: speed difference)\n";
 }
 
 int main(int argc, char** argv) {
@@ -47,6 +53,7 @@ int main(int argc, char** argv) {
     
     // Default configuration
     solo::DualTrackDriver::Config config;
+    bool enable_ros = false;
     
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
@@ -66,6 +73,9 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--no-invert-right") == 0) {
             config.invert_right = false;
         }
+        else if (strcmp(argv[i], "--ros") == 0) {
+            enable_ros = true;
+        }
         else {
             std::cerr << "Unknown option: " << argv[i] << "\n";
             std::cerr << "Use --help for usage information.\n";
@@ -76,10 +86,13 @@ int main(int argc, char** argv) {
     std::cout << "Dual Track Controller - Stage 2\n";
     std::cout << "Left motor:  " << config.left_device << (config.invert_left ? " (inverted)" : "") << "\n";
     std::cout << "Right motor: " << config.right_device << (config.invert_right ? " (inverted)" : "") << "\n";
+    if (enable_ros) {
+        std::cout << "ROS2 topics: ENABLED (/ibus/ch2, /ibus/ch1)\n";
+    }
     std::cout << "\nStarting TUI...\n";
     
     try {
-        solo::DualTrackTUI tui(config);
+        solo::DualTrackTUI tui(config, enable_ros);
         tui.run();
     } catch (const std::exception& e) {
         std::cerr << "Error: " << e.what() << std::endl;

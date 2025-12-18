@@ -63,6 +63,11 @@ target_link_libraries(dual_track_tui
   ${CURSES_LIBRARIES}
 )
 
+ament_target_dependencies(dual_track_tui
+  rclcpp
+  std_msgs
+)
+
 # solo_tui_direct executable (Stage 1)
 add_executable(solo_tui_direct
   src/solo_tui_direct_main.cpp
@@ -109,6 +114,27 @@ target_link_libraries(dual_track_tui_direct
   ${CURSES_LIBRARIES}
 )
 
+ament_target_dependencies(dual_track_tui_direct
+  rclcpp
+  std_msgs
+)
+
+# IBUS Speed Bridge Node - connects /ibus/ch2 to both motors
+add_executable(ibus_speed_bridge_node
+  src/ibus_speed_bridge_node.cpp
+)
+
+target_link_libraries(ibus_speed_bridge_node
+  dual_track_driver
+  solo_driver
+  ${Boost_LIBRARIES}
+)
+
+ament_target_dependencies(ibus_speed_bridge_node
+  rclcpp
+  std_msgs
+)
+
 # Install targets
 install(TARGETS
   solo_driver
@@ -124,6 +150,7 @@ install(TARGETS
 install(TARGETS
   solo_tui_direct
   dual_track_tui_direct
+  ibus_speed_bridge_node
   simple_test_tui
   debug_protocol
   DESTINATION lib/${PROJECT_NAME}
@@ -134,9 +161,11 @@ install(TARGETS
 # For direct access, use: export PATH="$HOME/ros2_ws/install/solo_usb_controller/bin:$PATH"
 # Or use: ros2 run solo_usb_controller solo_tui_direct
 # Or use: ros2 run solo_usb_controller dual_track_tui_direct
+# Or use: ros2 run solo_usb_controller ibus_speed_bridge_node
 install(TARGETS
   solo_tui_direct
   dual_track_tui_direct
+  ibus_speed_bridge_node
   simple_test_tui
   debug_protocol
   RUNTIME DESTINATION bin
@@ -153,13 +182,11 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/config
 )
 
-# Install launch files (if directory exists)
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/launch")
-  install(DIRECTORY
-    launch/
-    DESTINATION share/${PROJECT_NAME}/launch
-  )
-endif()
+# Install launch files
+install(DIRECTORY
+  launch/
+  DESTINATION share/${PROJECT_NAME}/launch
+)
 
 # Install rules
 install(FILES

@@ -7,7 +7,7 @@
 
 namespace solo {
 
-DualTrackTUI::DualTrackTUI(const DualTrackDriver::Config& config)
+DualTrackTUI::DualTrackTUI(const DualTrackDriver::Config& config, bool enable_ros)
     : config_(config)
     , running_(false)
     , motors_enabled_(false)
@@ -20,31 +20,77 @@ DualTrackTUI::DualTrackTUI(const DualTrackDriver::Config& config)
     , screen_width_(0)
     , show_help_(false)
     , logging_enabled_(false)
+    , ros_enabled_(enable_ros)
+    , ros_speed_value_(0.0f)
+    , ros_steering_value_(0.0f)
+    , ros_speed_active_(false)
+    , ros_steering_active_(false)
 {
     driver_ = std::make_unique<DualTrackDriver>(config_);
+    
+    // Don't initialize ROS2 in constructor - do it in run() after UI is initialized
+    // This allows better error reporting to the user
 }
 
 DualTrackTUI::~DualTrackTUI() {
     shutdownUI();
+    shutdownROS2();
     closeLogFile();
 }
 
 void DualTrackTUI::run() {
-    initUI();
-    
-    // Try to connect
-    status_message_ = "Connecting to motors...";
-    drawUI();
-    
-    if (!driver_->connect()) {
-        status_message_ = "ERROR: " + driver_->getLastError();
+    try {
+        initUI();
+        
+        // Show initial screen
+        status_message_ = "Initializing...";
         drawUI();
-        getch();
-        return;
-    }
+        refresh();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));  // Brief pause to show screen
+        
+        // Initialize ROS2 if enabled (after UI is ready for error display)
+        if (ros_enabled_) {
+            status_message_ = "Initializing ROS2...";
+            drawUI();
+            refresh();
+            try {
+                initROS2();
+                status_message_ = "ROS2 initialized - Subscribed to /ibus/ch2 and /ibus/ch1";
+                drawUI();
+                refresh();
+                std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            } catch (const std::exception& e) {
+                status_message_ = "ERROR: ROS2 init failed: " + std::string(e.what());
+                drawUI();
+                mvprintw(10, 2, "Press any key to continue without ROS2...");
+                refresh();
+                timeout(-1);  // Blocking wait for keypress
+                getch();
+                timeout(50);  // Restore non-blocking
+                ros_enabled_ = false;
+            }
+        }
+        
+        // Try to connect
+        status_message_ = "Connecting to motors...";
+        drawUI();
+        refresh();
+        
+        if (!driver_->connect()) {
+            status_message_ = "ERROR: " + driver_->getLastError();
+            drawUI();
+            mvprintw(10, 2, "Connection failed. Press any key to exit...");
+            refresh();
+            timeout(-1);  // Blocking wait for keypress
+            getch();
+            timeout(50);  // Restore non-blocking
+            return;
+        }
     
     status_message_ = "Connected to both motors!";
     drawUI();
+    refresh();
+    std::this_thread::sleep_for(std::chrono::milliseconds(500));  // Show connection success
     
     // Configure both motors for operation
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -84,12 +130,19 @@ void DualTrackTUI::run() {
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     
     status_message_ = "Ready - Press ? for help";
+    drawUI();
+    refresh();
     
     running_ = true;
     last_update_ = std::chrono::steady_clock::now();
     
     // Main loop
     while (running_) {
+        // Spin ROS2 callbacks if enabled
+        if (ros_enabled_) {
+            spinROS2();
+        }
+        
         // Handle input (non-blocking)
         int ch = getch();
         if (ch != ERR) {
@@ -118,6 +171,11 @@ void DualTrackTUI::run() {
                 status_message_ = "FAULT DETECTED - Motors stopped!";
             }
             
+            // Update motion commands from ROS2 topics if active, otherwise use keyboard
+            if (ros_enabled_) {
+                updateFromROS2Topics(now);
+            }
+            
             // Continuously send setpoints when motors enabled (SOLO needs periodic updates)
             if (motors_enabled_) {
                 driver_->arcTurn(current_speed_, current_turn_ratio_);
@@ -132,6 +190,34 @@ void DualTrackTUI::run() {
         }
         
         drawUI();
+    }
+    } catch (const std::exception& e) {
+        // If UI is initialized, show error on screen
+        if (screen_height_ > 0) {
+            clear();
+            mvprintw(5, 2, "FATAL ERROR: %s", e.what());
+            mvprintw(7, 2, "Press any key to exit...");
+            refresh();
+            timeout(-1);
+            getch();
+            timeout(50);
+        } else {
+            // UI not initialized, print to stderr
+            std::cerr << "FATAL ERROR: " << e.what() << std::endl;
+        }
+    } catch (...) {
+        // Catch any other exceptions
+        if (screen_height_ > 0) {
+            clear();
+            mvprintw(5, 2, "FATAL ERROR: Unknown exception");
+            mvprintw(7, 2, "Press any key to exit...");
+            refresh();
+            timeout(-1);
+            getch();
+            timeout(50);
+        } else {
+            std::cerr << "FATAL ERROR: Unknown exception" << std::endl;
+        }
     }
 }
 
@@ -238,6 +324,20 @@ void DualTrackTUI::drawControlPanel() {
         attron(COLOR_PAIR(3));
         mvprintw(row, 4, "Motors: DISABLED");
         attroff(COLOR_PAIR(3));
+    }
+    
+    // ROS2 control status
+    if (ros_enabled_) {
+        std::lock_guard<std::mutex> lock(ros_mutex_);
+        if (ros_speed_active_ && ros_steering_active_) {
+            attron(COLOR_PAIR(6) | A_BOLD);
+            mvprintw(row, 25, "ROS2: ACTIVE");
+            attroff(COLOR_PAIR(6) | A_BOLD);
+        } else {
+            attron(COLOR_PAIR(3));
+            mvprintw(row, 25, "ROS2: WAITING");
+            attroff(COLOR_PAIR(3));
+        }
     }
     row++;
     row++;
@@ -418,15 +518,24 @@ void DualTrackTUI::drawTelemetryPanel() {
     
     // Logging and correction status
     row++;
+    int status_col = 4;
     if (logging_enabled_) {
         attron(COLOR_PAIR(1));
-        mvprintw(row, 4, "● LOGGING");
+        mvprintw(row, status_col, "● LOGGING");
         attroff(COLOR_PAIR(1));
+        status_col += 15;
     }
     if (driver_->isSpeedCorrectionEnabled()) {
         attron(COLOR_PAIR(6));
-        mvprintw(row, logging_enabled_ ? 18 : 4, "● SPEED CORRECTION");
+        mvprintw(row, status_col, "● SPEED CORRECTION");
         attroff(COLOR_PAIR(6));
+        status_col += 20;
+    }
+    if (ros_enabled_) {
+        std::lock_guard<std::mutex> lock(ros_mutex_);
+        attron(COLOR_PAIR(4));
+        mvprintw(row, status_col, "● ROS2: /ibus/ch2 (speed), /ibus/ch1 (steering)");
+        attroff(COLOR_PAIR(4));
     }
 }
 
@@ -475,6 +584,13 @@ void DualTrackTUI::drawHelp() {
     mvprintw(row++, col, "    M           - Toggle motor enable    SPACE      - EMERGENCY STOP    ");
     mvprintw(row++, col, "    C           - Clear faults           L          - Toggle logging    ");
     mvprintw(row++, col, "    P           - Toggle speed correction (closed-loop)                 ");
+    if (ros_enabled_) {
+        mvprintw(row++, col, "                                                                        ");
+        mvprintw(row++, col, "  ROS2 TOPIC CONTROL (when active):                                    ");
+        mvprintw(row++, col, "    /ibus/ch2  - Speed control (-1=reverse, 1=forward)                 ");
+        mvprintw(row++, col, "    /ibus/ch1  - Steering control (speed difference for turning)      ");
+        mvprintw(row++, col, "    Keyboard controls disabled when ROS2 topics are active             ");
+    }
     mvprintw(row++, col, "    ?           - Toggle this help       ESC / R    - Quit              ");
     mvprintw(row++, col, "                                                                        ");
     mvprintw(row++, col, "========================================================================");
@@ -493,45 +609,59 @@ void DualTrackTUI::drawStatusBar() {
 }
 
 void DualTrackTUI::handleInput(int ch) {
+    // Check if ROS2 is actively controlling (ignore keyboard if so)
+    bool ros_controlling = false;
+    if (ros_enabled_) {
+        std::lock_guard<std::mutex> lock(ros_mutex_);
+        ros_controlling = ros_speed_active_ && ros_steering_active_;
+    }
+    
     switch (ch) {
         // Forward/Reverse
         case 'w':
         case 'W':
         case KEY_UP:
-            cmdForward();
+            if (!ros_controlling) cmdForward();
+            else status_message_ = "ROS2 control active - keyboard disabled";
             break;
         case 's':
         case 'S':
         case KEY_DOWN:
-            cmdReverse();
+            if (!ros_controlling) cmdReverse();
+            else status_message_ = "ROS2 control active - keyboard disabled";
             break;
             
         // Turning
         case 'a':
         case 'A':
         case KEY_LEFT:
-            cmdTurnLeft();
+            if (!ros_controlling) cmdTurnLeft();
+            else status_message_ = "ROS2 control active - keyboard disabled";
             break;
         case 'd':
         case 'D':
         case KEY_RIGHT:
-            cmdTurnRight();
+            if (!ros_controlling) cmdTurnRight();
+            else status_message_ = "ROS2 control active - keyboard disabled";
             break;
             
         // Rotation in place
         case 'q':
         case 'Q':
-            cmdRotateLeft();
+            if (!ros_controlling) cmdRotateLeft();
+            else status_message_ = "ROS2 control active - keyboard disabled";
             break;
         case 'e':
         case 'E':
-            cmdRotateRight();
+            if (!ros_controlling) cmdRotateRight();
+            else status_message_ = "ROS2 control active - keyboard disabled";
             break;
             
         // Stop
         case 'x':
         case 'X':
-            cmdStop();
+            if (!ros_controlling) cmdStop();
+            else status_message_ = "ROS2 control active - keyboard disabled";
             break;
             
         // Speed adjustment
@@ -807,6 +937,108 @@ void DualTrackTUI::logData() {
               << right_telemetry_.faults.toString() << "\n";
     
     log_file_.flush();
+}
+
+//=============================================================================
+// ROS2 Topic Handlers
+//=============================================================================
+
+void DualTrackTUI::initROS2() {
+    try {
+        // Initialize ROS2 if not already initialized
+        // Note: rclcpp::init() can be called multiple times safely
+        // It will return false if already initialized, which is fine
+        int argc = 0;
+        char** argv = nullptr;
+        rclcpp::init(argc, argv);
+        
+        ros_node_ = rclcpp::Node::make_shared("dual_track_tui");
+        
+        // Subscribe to IBUS channels
+        speed_sub_ = ros_node_->create_subscription<std_msgs::msg::Float64>(
+            "/ibus/ch2", 10,
+            std::bind(&DualTrackTUI::speedCallback, this, std::placeholders::_1));
+        
+        steering_sub_ = ros_node_->create_subscription<std_msgs::msg::Float64>(
+            "/ibus/ch1", 10,
+            std::bind(&DualTrackTUI::steeringCallback, this, std::placeholders::_1));
+        
+        // Initialize timing
+        auto now = std::chrono::steady_clock::now();
+        last_ros_speed_time_ = now;
+        last_ros_steering_time_ = now;
+    } catch (const std::exception& e) {
+        std::cerr << "ERROR: Failed to initialize ROS2: " << e.what() << std::endl;
+        ros_enabled_ = false;
+        throw;
+    }
+}
+
+void DualTrackTUI::shutdownROS2() {
+    if (ros_enabled_ && rclcpp::ok()) {
+        speed_sub_.reset();
+        steering_sub_.reset();
+        ros_node_.reset();
+        rclcpp::shutdown();
+    }
+}
+
+void DualTrackTUI::spinROS2() {
+    if (ros_enabled_ && ros_node_) {
+        rclcpp::spin_some(ros_node_);
+    }
+}
+
+void DualTrackTUI::speedCallback(const std_msgs::msg::Float64::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(ros_mutex_);
+    ros_speed_value_ = msg->data;
+    last_ros_speed_time_ = std::chrono::steady_clock::now();
+    ros_speed_active_ = true;
+}
+
+void DualTrackTUI::steeringCallback(const std_msgs::msg::Float64::SharedPtr msg) {
+    std::lock_guard<std::mutex> lock(ros_mutex_);
+    ros_steering_value_ = msg->data;
+    last_ros_steering_time_ = std::chrono::steady_clock::now();
+    ros_steering_active_ = true;
+}
+
+void DualTrackTUI::updateFromROS2Topics(std::chrono::steady_clock::time_point now) {
+    std::lock_guard<std::mutex> lock(ros_mutex_);
+    
+    // Check for timeout on speed topic
+    auto speed_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - last_ros_speed_time_).count();
+    if (speed_elapsed > ROS_TIMEOUT_MS) {
+        ros_speed_active_ = false;
+        // If speed times out, stop the vehicle for safety
+        if (motors_enabled_) {
+            current_speed_ = 0.0f;
+            current_turn_ratio_ = 0.0f;
+            status_message_ = "ROS speed topic timeout - Stopped";
+        }
+    }
+    
+    // Check for timeout on steering topic
+    auto steering_elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - last_ros_steering_time_).count();
+    if (steering_elapsed > ROS_TIMEOUT_MS) {
+        ros_steering_active_ = false;
+    }
+    
+    // Update motion commands from ROS topics if both are active
+    if (ros_speed_active_ && ros_steering_active_) {
+        // Map /ibus/ch2: -1 (full reverse) to 1 (full forward) -> linear velocity
+        // Clamp to [-1, 1] range
+        float speed_normalized = std::max(-1.0f, std::min(1.0f, ros_speed_value_));
+        current_speed_ = speed_normalized * MAX_SPEED;
+        
+        // Map /ibus/ch1: steering value -> turn ratio (speed difference)
+        // Clamp steering to reasonable range (typically -1 to 1, but allow wider)
+        float steering_normalized = std::max(-2.0f, std::min(2.0f, ros_steering_value_));
+        // Convert steering to turn ratio: positive steering = right turn = positive turn ratio
+        current_turn_ratio_ = steering_normalized;
+    }
 }
 
 } // namespace solo

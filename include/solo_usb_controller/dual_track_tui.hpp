@@ -7,6 +7,9 @@
 #include <string>
 #include <fstream>
 #include <chrono>
+#include <mutex>
+#include <rclcpp/rclcpp.hpp>
+#include <std_msgs/msg/float64.hpp>
 
 namespace solo {
 
@@ -23,10 +26,12 @@ namespace solo {
  * - Per-motor and combined fault monitoring
  * - CSV data logging
  * - Emergency stop
+ * - Optional ROS2 topic control via /ibus/ch2 (speed) and /ibus/ch1 (steering)
  */
 class DualTrackTUI {
 public:
-    explicit DualTrackTUI(const DualTrackDriver::Config& config = DualTrackDriver::Config());
+    explicit DualTrackTUI(const DualTrackDriver::Config& config = DualTrackDriver::Config(), 
+                          bool enable_ros = false);
     ~DualTrackTUI();
 
     // Main application loop
@@ -80,6 +85,16 @@ private:
     void logData();
     
     //=========================================================================
+    // ROS2 Topic Handlers
+    //=========================================================================
+    void initROS2();
+    void shutdownROS2();
+    void spinROS2();
+    void speedCallback(const std_msgs::msg::Float64::SharedPtr msg);
+    void steeringCallback(const std_msgs::msg::Float64::SharedPtr msg);
+    void updateFromROS2Topics(std::chrono::steady_clock::time_point now);
+    
+    //=========================================================================
     // State
     //=========================================================================
     std::unique_ptr<DualTrackDriver> driver_;
@@ -116,6 +131,21 @@ private:
     std::chrono::steady_clock::time_point log_start_time_;
     
     //=========================================================================
+    // ROS2 State
+    //=========================================================================
+    bool ros_enabled_;
+    std::shared_ptr<rclcpp::Node> ros_node_;
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr speed_sub_;
+    rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr steering_sub_;
+    std::mutex ros_mutex_;  // Protect ROS callback data
+    float ros_speed_value_;      // Latest speed from /ibus/ch2 (-1 to 1)
+    float ros_steering_value_;   // Latest steering from /ibus/ch1
+    std::chrono::steady_clock::time_point last_ros_speed_time_;
+    std::chrono::steady_clock::time_point last_ros_steering_time_;
+    bool ros_speed_active_;      // True if we received speed data recently
+    bool ros_steering_active_;   // True if we received steering data recently
+    
+    //=========================================================================
     // Configuration Constants
     //=========================================================================
     static constexpr float DEFAULT_SPEED_STEP = 2.0f;      // rad/s per keypress
@@ -123,6 +153,7 @@ private:
     static constexpr float MAX_SPEED = 20.0f;              // rad/s
     static constexpr float MAX_TURN_RATIO = 1.5f;          // allow slight over-pivot
     static constexpr int UPDATE_RATE_MS = 100;             // 10 Hz display update
+    static constexpr int ROS_TIMEOUT_MS = 500;             // Timeout for ROS topic data (ms)
 };
 
 } // namespace solo
