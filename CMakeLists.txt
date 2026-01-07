@@ -182,11 +182,11 @@ install(DIRECTORY
   DESTINATION share/${PROJECT_NAME}/config
 )
 
-# Install launch files
-install(DIRECTORY
-  launch/
-  DESTINATION share/${PROJECT_NAME}/launch
-)
+# Install launch files (if directory exists)
+# install(DIRECTORY
+#   launch/
+#   DESTINATION share/${PROJECT_NAME}/launch
+# )
 
 # Install rules
 install(FILES

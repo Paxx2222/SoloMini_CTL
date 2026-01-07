@@ -6,9 +6,29 @@ Run this to set motor parameters without running auto-identification
 
 import sys
 import time
-sys.path.insert(0, '/home/jeeves/programming/solo/SoloPy')
+import os
 
-import SoloPy as solo
+# Try to import SoloPy from pip installation first
+try:
+    import SoloPy as solo
+except ImportError:
+    # Fallback: try to use local SoloPy if available via environment variable
+    solo_py_path = os.environ.get('SOLOPY_PATH', '/home/jeeves/programming/solo/SoloPy')
+    if os.path.exists(solo_py_path):
+        sys.path.insert(0, solo_py_path)
+        try:
+            import SoloPy as solo
+        except ImportError:
+            print("ERROR: SoloPy library not found at specified path!")
+            print(f"Path checked: {solo_py_path}")
+            print("Install with: pip install SoloPy")
+            print("Or set SOLOPY_PATH environment variable to point to SoloPy directory")
+            sys.exit(1)
+    else:
+        print("ERROR: SoloPy library not found!")
+        print("Install with: pip install SoloPy")
+        print("Or set SOLOPY_PATH environment variable to point to SoloPy directory")
+        sys.exit(1)
 
 def configure_solo():
     print("=" * 70)

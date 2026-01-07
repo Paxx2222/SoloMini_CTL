@@ -18,15 +18,29 @@ sudo apt install -y \
     libncurses-dev
 
 # Install ROS dependencies if ROS is available
-if [ -f "/opt/ros/jazzy/setup.bash" ]; then
-    echo "Installing ROS dependencies..."
+# Try to detect ROS distribution
+ROS_DISTRO="${ROS_DISTRO:-jazzy}"
+ROS_INSTALL_PATH="/opt/ros/${ROS_DISTRO}"
+
+if [ -f "${ROS_INSTALL_PATH}/setup.bash" ] || [ -f "/opt/ros/jazzy/setup.bash" ]; then
+    echo "Installing ROS dependencies for ${ROS_DISTRO}..."
     sudo apt install -y \
-        ros-jazzy-rclcpp \
-        ros-jazzy-std-msgs \
-        ros-jazzy-sensor-msgs \
-        ros-jazzy-ament-cmake
+        ros-${ROS_DISTRO}-rclcpp \
+        ros-${ROS_DISTRO}-std-msgs \
+        ros-${ROS_DISTRO}-sensor-msgs \
+        ros-${ROS_DISTRO}-ament-cmake || {
+        echo "Warning: Failed to install ROS ${ROS_DISTRO} packages. Trying jazzy..."
+        sudo apt install -y \
+            ros-jazzy-rclcpp \
+            ros-jazzy-std-msgs \
+            ros-jazzy-sensor-msgs \
+            ros-jazzy-ament-cmake || {
+            echo "Warning: Failed to install ROS dependencies. You may need to install manually."
+        }
+    }
 else
-    echo "Warning: ROS 2 Jazzy not found. Skipping ROS dependencies."
+    echo "Warning: ROS 2 not found. Skipping ROS dependencies."
+    echo "Set ROS_DISTRO environment variable if using a different distribution"
 fi
 
 echo ""

@@ -4,11 +4,20 @@
 
 # Since both controllers have the same serial number (12345678),
 # we differentiate by USB port path for reliable device naming.
+#
+# IMPORTANT: USB port paths (KERNELS values like "1-1.3:1.0") are machine-specific!
+# On a new machine, you need to:
+#   1. Plug in both controllers
+#   2. Run: udevadm info /dev/ttyACM0 | grep KERNELS
+#   3. Update the KERNELS values below to match your USB port topology
+#   4. Reload rules: sudo udevadm control --reload-rules && sudo udevadm trigger
 
 # Left motor controller (USB port 1-1.3) -> /dev/solo_left
+# NOTE: Update KERNELS value for your machine's USB port path
 SUBSYSTEM=="tty", KERNELS=="1-1.3:1.0", ATTRS{idVendor}=="1cbe", ATTRS{idProduct}=="0002", SYMLINK+="solo_left", MODE="0666"
 
 # Right motor controller (USB port 1-1.4) -> /dev/solo_right
+# NOTE: Update KERNELS value for your machine's USB port path
 SUBSYSTEM=="tty", KERNELS=="1-1.4:1.0", ATTRS{idVendor}=="1cbe", ATTRS{idProduct}=="0002", SYMLINK+="solo_right", MODE="0666"
 
 # Legacy symlink for single-motor compatibility

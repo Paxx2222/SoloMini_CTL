@@ -11,11 +11,19 @@ echo "Workspace: $WORKSPACE_DIR"
 
 cd "$WORKSPACE_DIR"
 
-# Source ROS 2
-if [ -f "/opt/ros/jazzy/setup.bash" ]; then
+# Source ROS 2 - try to detect distribution automatically
+ROS_DISTRO="${ROS_DISTRO:-jazzy}"
+ROS_INSTALL_PATH="/opt/ros/${ROS_DISTRO}"
+
+if [ -f "${ROS_INSTALL_PATH}/setup.bash" ]; then
+    source "${ROS_INSTALL_PATH}/setup.bash"
+    echo "Sourced ROS 2 ${ROS_DISTRO} from ${ROS_INSTALL_PATH}"
+elif [ -f "/opt/ros/jazzy/setup.bash" ]; then
     source /opt/ros/jazzy/setup.bash
+    echo "Sourced ROS 2 Jazzy (fallback)"
 else
-    echo "Warning: ROS 2 Jazzy not found at /opt/ros/jazzy"
+    echo "Warning: ROS 2 not found at ${ROS_INSTALL_PATH} or /opt/ros/jazzy"
+    echo "Set ROS_DISTRO environment variable if using a different distribution"
 fi
 
 # Build package

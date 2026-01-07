@@ -54,29 +54,68 @@ sudo apt install -y \
 
 ## Installation
 
-1. **Clone or copy this package to your ROS 2 workspace:**
+### Quick Setup (New Machine)
+
+For a complete setup on a new machine, use the provided scripts:
+
+```bash
+cd ~/ros2_ws/src/SoloMini_CTL
+
+# 1. Install all dependencies
+./scripts/install_deps.sh
+
+# 2. Install udev rules (creates /dev/solo_* symlinks)
+sudo ./scripts/setup_udev.sh
+
+# 3. Build the package
+./scripts/build.sh
+
+# 4. Source workspace (includes ROS2 base)
+source ~/ros2_ws/src/SoloMini_CTL/scripts/setup_env.sh
+```
+
+### Manual Installation
+
+1. **Install dependencies:**
    ```bash
-   cd ~/ros2_ws/src
-   # (assuming package is already here)
+   cd ~/ros2_ws/src/SoloMini_CTL
+   ./scripts/install_deps.sh
    ```
 
 2. **Install udev rules for stable device names:**
    ```bash
-   sudo cp rules/99-solo.rules /etc/udev/rules.d/
-   sudo udevadm control --reload-rules
-   sudo udevadm trigger
+   sudo ./scripts/setup_udev.sh
+   # Or manually:
+   # sudo cp rules/99-solo.rules /etc/udev/rules.d/
+   # sudo udevadm control --reload-rules
+   # sudo udevadm trigger
    ```
    
-   After connecting your SOLO controllers, they should appear as:
-   - `/dev/solo_left` - Left track motor (USB port 1-1.3)
-   - `/dev/solo_right` - Right track motor (USB port 1-1.4)
-   - `/dev/solo_mc_1` - Legacy single-motor symlink
+   **Note:** USB port paths in udev rules are machine-specific. After installation, verify:
+   ```bash
+   ls -la /dev/solo_*
+   # Should show: solo_left, solo_right, solo_mc_1
+   ```
+   
+   If symlinks don't appear, check USB port paths:
+   ```bash
+   udevadm info -q path -n /dev/ttyACM0
+   udevadm info -q path -n /dev/ttyACM1
+   ```
+   Update `rules/99-solo.rules` with correct KERNELS values if needed.
 
 3. **Build the package:**
    ```bash
    cd ~/ros2_ws
+   source /opt/ros/jazzy/setup.bash  # Source ROS2 base first!
    colcon build --packages-select solo_usb_controller
    source install/setup.bash
+   ```
+
+4. **Add user to dialout group (for serial port access):**
+   ```bash
+   sudo usermod -a -G dialout $USER
+   # Log out and back in for changes to take effect
    ```
 
 ## Usage
@@ -290,7 +329,7 @@ Apache-2.0
 
 ## Maintainer
 
-jeeves@todo.todo
+jeeves (noreply@example.com)
 
 ---
 

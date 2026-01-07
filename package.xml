@@ -4,7 +4,7 @@
   <name>solo_usb_controller</name>
   <version>1.0.0</version>
   <description>Motor control stack for SOLO Mini v2 controllers via USB on ROS 2 Jazzy</description>
-  <maintainer email="jeeves@todo.todo">jeeves</maintainer>
+  <maintainer email="noreply@example.com">jeeves</maintainer>
   <license>Apache-2.0</license>
 
   <buildtool_depend>ament_cmake</buildtool_depend>
